@@ -50,6 +50,9 @@ class GoogleDriveManager:
                 pageSize=50
             ).execute()
             
+            # ADD THIS DEBUG LINE HERE:
+            print(f"DEBUG: Raw Google Drive API response: {results}")
+            
             return results.get('files', [])
         except Exception as e:
             print(f"Error listing files from Drive: {e}")
