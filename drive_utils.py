@@ -1,19 +1,37 @@
 import os
-import io
+import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 class GoogleDriveManager:
-    def __init__(self, json_key_path='service_account.json'):
-        if not os.path.exists(json_key_path):
-            raise FileNotFoundError(f"Critical Error: {json_key_path} not found in the project root directory.")
+    def __init__(self):
+        # Define scopes
+        scopes = ['https://www.googleapis.com/auth/drive.readonly']
         
-        self.creds = service_account.Credentials.from_service_account_file(
-            json_key_path, scopes=SCOPES
-        )
+        # 1. Check if we are running in the cloud (Render) using the environment variable
+        env_creds = os.getenv('GOOGLE_CREDS_JSON')
+        
+        if env_creds:
+            try:
+                # Parse the raw string variable directly into a python dictionary
+                creds_dict = json.loads(env_creds)
+                self.creds = service_account.Credentials.from_service_account_info(
+                    creds_dict, scopes=scopes
+                )
+                print("Authenticated successfully using Render Environment Variables.")
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse GOOGLE_CREDS_JSON environment variable: {e}")
+        
+        # 2. Fall back to local file if running on your laptop
+        elif os.path.exists('service_account.json'):
+            self.creds = service_account.Credentials.from_service_account_file(
+                'service_account.json', scopes=scopes
+            )
+            print("Authenticated successfully using local service_account.json file.")
+            
+        else:
+            raise FileNotFoundError("Critical Error: Neither GOOGLE_CREDS_JSON env variable nor service_account.json file was found.")
+            
         self.service = build('drive', 'v3', credentials=self.creds)
 
     def list_audio_files(self, folder_id):

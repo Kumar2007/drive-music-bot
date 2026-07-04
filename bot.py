@@ -123,7 +123,8 @@ async def main():
     
     # Fire up the lightweight asynchronous web layer in background process routine
     loop = asyncio.get_event_loop()
-    loop.create_task(web_app.run_task(host="0.0.0.0", port=port, use_reloader=False))
+    # Start Quart server (without use_reloader)
+    loop.create_task(web_app.run_task(host="0.0.0.0", port=port))
     
     # Authenticate and engage core Discord event architecture loops
     token = os.getenv('DISCORD_TOKEN')
