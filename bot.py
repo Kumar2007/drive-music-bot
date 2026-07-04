@@ -18,7 +18,7 @@ except Exception as e:
     drive_manager = None
 
 # Hardcoded Google Drive Folder ID containing your audio tracks
-FOLDER_ID = "1SvyY8vXWlygR7wXg6m8L9v_rC1Lz8l8g"
+FOLDER_ID = "1koYriiJvKEGIM-WvyEJShRArzi-tuHYV"
 
 @bot.event
 async def on_ready():
