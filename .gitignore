@@ -1,0 +1,13 @@
+# Ignore the virtual environment directory
+venv/
+.venv/
+__pycache__/
+
+# Ignore environment variables containing your Discord Token
+.env
+
+# Ignore your Google Service Account credential file
+service_account.json
+
+# Ignore downloaded music temp files
+temp/
