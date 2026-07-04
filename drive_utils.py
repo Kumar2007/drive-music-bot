@@ -35,16 +35,24 @@ class GoogleDriveManager:
         self.service = build('drive', 'v3', credentials=self.creds)
 
     def list_audio_files(self, folder_id):
-        query = f"'{folder_id}' in parents and (mimeType contains 'audio/' or name contains '.mp3' or name contains '.wav') and trashed = false"
         try:
+            # Broadened query: Looks for anything matching general audio types or common extensions
+            query = (
+                f"'{folder_id}' in parents and "
+                f"(mimeType contains 'audio/' or name contains '.mp3' or name contains '.m4a' or name contains '.wav') "
+                f"and trashed = false"
+            )
+            
             results = self.service.files().list(
                 q=query,
-                fields="files(id, name)",
-                pageSize=100
+                spaces='drive',
+                fields="files(id, name, mimeType)",
+                pageSize=50
             ).execute()
+            
             return results.get('files', [])
         except Exception as e:
-            print(f"Error fetching files from Google Drive: {e}")
+            print(f"Error listing files from Drive: {e}")
             return []
 
     def download_file(self, file_id, dest_path):
