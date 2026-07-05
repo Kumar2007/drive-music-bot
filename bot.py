@@ -4,9 +4,10 @@ from discord.ext import commands
 from quart import Quart
 import asyncio
 import re
+import traceback
+import sys
 from drive_utils import GoogleDriveManager
 
-# CRUCIAL FIX: Request both Message Content and Voice State intents explicitly
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
@@ -20,8 +21,6 @@ except Exception as e:
     drive_manager = None
 
 FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
-if not FOLDER_ID:
-    print("❌ ERROR: DRIVE_FOLDER_ID environment variable is missing!")
 
 @bot.event
 async def on_ready():
@@ -30,9 +29,15 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # Keep logging incoming texts for safety
     print(f"📩 [RAW MESSAGE] Author: {message.author} | Content: '{message.content}'")
     await bot.process_commands(message)
+
+# DIAGNOSTIC EXCEPTION CATCHER: Stops silent command crashes
+@bot.event
+async def on_command_error(ctx, error):
+    print(f"❌ [COMMAND ERROR] Triggered by '{ctx.message.content}': {error}", file=sys.stderr)
+    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+    await ctx.send(f"⚠️ An internal error occurred: `{error}`")
 
 @bot.command(name="join")
 async def join(ctx):
@@ -76,9 +81,9 @@ async def play(ctx, *, user_input: str):
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
-    # Check user voice presence
     if not ctx.voice_client:
         if ctx.author.voice:
+            print(f"Connecting to channel: {ctx.author.voice.channel.name}")
             await ctx.author.voice.channel.connect()
         else:
             return await ctx.send("You need to be in a voice channel so I know where to join!")
