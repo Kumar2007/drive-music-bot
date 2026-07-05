@@ -1,7 +1,6 @@
 import io
 import os
 import json
-import shutil
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -70,21 +69,21 @@ class GoogleDriveManager:
         if not os.path.exists(self.cache_dir):
             return
 
-        # Calculate current cumulative byte size of directory elements
-        # Calculate current cumulative byte size of directory elements cleanly
+        # Explicit loop to calculate size, avoiding syntax complexities
         total_size = 0
         for f in os.listdir(self.cache_dir):
             file_path = os.path.join(self.cache_dir, f)
             if os.path.isfile(file_path):
                 total_size += os.path.getsize(file_path)
-
+        
         # Evict files using an LRU (Least Recently Used) strategy if storage budget is blown
         while total_size + new_file_size > self.max_cache_size:
-            files = [
-                os.path.join(self.cache_dir, f) 
-                for f in os.listdir(self.cache_dir) 
-                if os.path.isfile(os.path.join(self.cache_dir, f))
-            )
+            files = []
+            for f in os.listdir(self.cache_dir):
+                file_path = os.path.join(self.cache_dir, f)
+                if os.path.isfile(file_path):
+                    files.append(file_path)
+                    
             if not files:
                 break
                 
