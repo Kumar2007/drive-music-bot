@@ -27,6 +27,7 @@ async def on_ready():
 
 @bot.command(name="join")
 async def join(ctx):
+    """Joins the user's current voice channel."""
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         if ctx.voice_client:
@@ -60,10 +61,20 @@ async def list_tracks(ctx):
 
 @bot.command(name="play")
 async def play(ctx, *, user_input: str):
-    if not ctx.voice_client:
-        return await ctx.send("I need to be in a voice channel first! Use `!join`.")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
+
+    # Auto-Join Logic Implementation
+    if not ctx.voice_client:
+        if ctx.author.voice:
+            # Bot joins the channel the user is currently sitting in
+            await ctx.author.voice.channel.connect()
+        else:
+            return await ctx.send("You need to be in a voice channel so I know where to join and play music!")
+    else:
+        # If the bot is in a different channel than the user, move to the user's channel
+        if ctx.author.voice and ctx.voice_client.channel != ctx.author.voice.channel:
+            await ctx.voice_client.move_to(ctx.author.voice.channel)
 
     files = drive_manager.list_audio_files(FOLDER_ID)
     if not files:
