@@ -6,9 +6,10 @@ import asyncio
 import re
 from drive_utils import GoogleDriveManager
 
-# Explicitly request all standard intents
+# CRUCIAL FIX: Request both Message Content and Voice State intents explicitly
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -29,10 +30,8 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # DIAGNOSTIC LOG: Print every incoming message to the Render logs
+    # Keep logging incoming texts for safety
     print(f"📩 [RAW MESSAGE] Author: {message.author} | Content: '{message.content}'")
-    
-    # Crucial: This line allows commands like !play and !join to continue working
     await bot.process_commands(message)
 
 @bot.command(name="join")
@@ -77,6 +76,7 @@ async def play(ctx, *, user_input: str):
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
+    # Check user voice presence
     if not ctx.voice_client:
         if ctx.author.voice:
             await ctx.author.voice.channel.connect()
