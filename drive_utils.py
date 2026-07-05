@@ -71,12 +71,13 @@ class GoogleDriveManager:
             return
 
         # Calculate current cumulative byte size of directory elements
-        total_size = sum(
-            os.path.getsize(os.path.join(self.cache_dir, f)) 
-            for f in os.listdir(self.cache_dir) 
-            if os.path.isfile(os.path.join(self.cache_dir, f))
-        )
-        
+        # Calculate current cumulative byte size of directory elements cleanly
+        total_size = 0
+        for f in os.listdir(self.cache_dir):
+            file_path = os.path.join(self.cache_dir, f)
+            if os.path.isfile(file_path):
+                total_size += os.path.getsize(file_path)
+
         # Evict files using an LRU (Least Recently Used) strategy if storage budget is blown
         while total_size + new_file_size > self.max_cache_size:
             files = [
