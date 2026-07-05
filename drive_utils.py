@@ -84,20 +84,22 @@ class GoogleDriveManager:
                 pass
             return local_path, True
 
-        print(f"📥 Cache Miss. Pulling from Google Drive: {file_name}")
+        print(f"📥 Cache Miss. Pulling from Google Drive directly to disk: {file_name}")
         try:
-            request = self.service.files().get_media(fileId=file_id)
-            memory_buffer = io.BytesIO()
-            downloader = MediaIoBaseDownload(memory_buffer, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
+            file_metadata = self.service.files().get(fileId=file_id, fields="size").execute()
+            file_size = int(file_metadata.get("size", 0))
             
-            file_bytes = memory_buffer.getvalue()
-            self._manage_cache_size(len(file_bytes))
-            with open(local_path, "wb") as f:
-                f.write(file_bytes)
+            self._manage_cache_size(file_size)
+
+            request = self.service.files().get_media(fileId=file_id)
+            with open(local_path, "wb") as file_stream:
+                downloader = MediaIoBaseDownload(file_stream, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
             return local_path, True
         except Exception as e:
             print(f"Error resolving download pipeline for file {file_id}: {e}")
+            if os.path.exists(local_path):
+                os.remove(local_path)
             return None, False
