@@ -6,8 +6,10 @@ import asyncio
 import re
 from drive_utils import GoogleDriveManager
 
+# Explicitly request all standard intents
 intents = discord.Intents.default()
 intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 try:
@@ -25,9 +27,17 @@ async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     print("------")
 
+@bot.event
+async def on_message(message):
+    # DIAGNOSTIC LOG: Print every incoming message to the Render logs
+    print(f"📩 [RAW MESSAGE] Author: {message.author} | Content: '{message.content}'")
+    
+    # Crucial: This line allows commands like !play and !join to continue working
+    await bot.process_commands(message)
+
 @bot.command(name="join")
 async def join(ctx):
-    """Joins the user's current voice channel."""
+    print("📥 !join command triggered")
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         if ctx.voice_client:
@@ -40,6 +50,7 @@ async def join(ctx):
 
 @bot.command(name="leave")
 async def leave(ctx):
+    print("📤 !leave command triggered")
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("Disconnected from voice channel.")
@@ -48,6 +59,7 @@ async def leave(ctx):
 
 @bot.command(name="list")
 async def list_tracks(ctx):
+    print("📋 !list command triggered")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
     await ctx.send("Fetching tracks from Google Drive...")
@@ -61,18 +73,16 @@ async def list_tracks(ctx):
 
 @bot.command(name="play")
 async def play(ctx, *, user_input: str):
+    print(f"🎵 !play command triggered with input: {user_input}")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
-    # Auto-Join Logic Implementation
     if not ctx.voice_client:
         if ctx.author.voice:
-            # Bot joins the channel the user is currently sitting in
             await ctx.author.voice.channel.connect()
         else:
-            return await ctx.send("You need to be in a voice channel so I know where to join and play music!")
+            return await ctx.send("You need to be in a voice channel so I know where to join!")
     else:
-        # If the bot is in a different channel than the user, move to the user's channel
         if ctx.author.voice and ctx.voice_client.channel != ctx.author.voice.channel:
             await ctx.voice_client.move_to(ctx.author.voice.channel)
 
@@ -97,18 +107,17 @@ async def play(ctx, *, user_input: str):
                 matches.append(f)
 
         if not matches:
-            return await ctx.send(f"🔍 No tracks found matching the word boundary query: `{user_input}`.")
+            return await ctx.send(f"🔍 No tracks found matching: `{user_input}`.")
         elif len(matches) == 1:
             target_file = matches[0]
-            await ctx.send(f"🎯 Exact word match verified!")
         else:
-            response = f"🔍 Multiple matches found for word `{user_input}`. Please type `!play [number]` with the correct track:\n\n"
+            response = f"🔍 Multiple matches found for `{user_input}`. Choose a track number:\n\n"
             for f in matches:
                 orig_index = files.index(f) + 1
                 response += f"**[{orig_index}]** {f['name']}\n"
             return await ctx.send(response)
 
-    await ctx.send(f"Processing media allocation data for: `{target_file['name']}`...")
+    await ctx.send(f"Processing: `{target_file['name']}`...")
 
     if ctx.voice_client.is_playing():
         ctx.voice_client.stop()
@@ -128,13 +137,13 @@ async def play(ctx, *, user_input: str):
         except Exception as e:
             await ctx.send(f"Failed to play audio stream via FFmpeg: {e}")
     else:
-        await ctx.send("Could not retrieve or process data stream from file distribution services.")
+        await ctx.send("Could not retrieve track from Google Drive.")
 
 web_app = Quart(__name__)
 
 @web_app.route('/')
 async def home():
-    return "Bot is alive and running 24/7 with active 100MB LRU storage caching!"
+    return "Bot is alive and running!"
 
 async def main():
     port = int(os.getenv("PORT", 10000))
