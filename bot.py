@@ -18,7 +18,7 @@ except Exception as e:
     print(f"Failed to initialize Google Drive Manager: {e}")
     drive_manager = None
 
-# Hardcoded Google Drive Folder ID containing your audio tracks
+# Extract targeted folder path configurations
 FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
 if not FOLDER_ID:
     print("❌ ERROR: DRIVE_FOLDER_ID environment variable is missing!")
@@ -70,20 +70,20 @@ async def list_tracks(ctx):
 
 @bot.command(name="play")
 async def play(ctx, *, user_input: str):
-    """Plays a track by index number or by searching part of its name."""
+    """Plays a track by index number or by searching part of its name with strict word boundaries."""
     if not ctx.voice_client:
         return await ctx.send("I need to be in a voice channel first! Use `!join`.")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
-    # 1. Fetch the latest file list from Drive
+    # 1. Fetch the file catalog structure map
     files = drive_manager.list_audio_files(FOLDER_ID)
     if not files:
         return await ctx.send("The Google Drive music folder is empty.")
 
     target_file = None
 
-    # 2. Check if the user typed a direct track number
+    # 2. Check if user provided direct integer index selection matching global tracking arrays
     if user_input.isdigit():
         track_number = int(user_input)
         if 1 <= track_number <= len(files):
@@ -91,50 +91,42 @@ async def play(ctx, *, user_input: str):
         else:
             return await ctx.send(f"Invalid track number. Choose 1 to {len(files)}.")
     
-    # 3. If it's not a number, run the search engine logic
+    # 3. Handle Regular Expression word boundary pattern matching engine filters
     else:
         query = user_input.lower().strip()
-        # Filter files where the query substring is inside the filename
-        # NEW LOGIC: Checks for exact word boundaries
         matches = []
         for f in files:
             filename_lower = f['name'].lower()
-            # \b matches the beginning and end of a specific word
             if re.search(rf"\b{re.escape(query)}\b", filename_lower):
                 matches.append(f)
 
         if not matches:
-            return await ctx.send(f"🔍 No tracks found matching `{user_input}`.")
+            return await ctx.send(f"🔍 No tracks found matching the word boundary query: `{user_input}`.")
         
         elif len(matches) == 1:
-            # Only one match found! Play it immediately
             target_file = matches[0]
-            await ctx.send(f"🎯 Exact match found!")
+            await ctx.send(f"🎯 Exact word match verified!")
         
         else:
-            # Multiple matches found! List them and ask the user to choose
-            response = f"🔍 Multiple matches found for `{user_input}`. Please type `!play [number]` with the correct track:\n\n"
+            response = f"🔍 Multiple matches found for word `{user_input}`. Please type `!play [number]` with the correct track:\n\n"
             for f in matches:
-                # Find the original index from the main files list
                 orig_index = files.index(f) + 1
                 response += f"**[{orig_index}]** {f['name']}\n"
             return await ctx.send(response)
 
-    # 4. Physical execution block (The download and stream logic you already wrote)
-    await ctx.send(f"Downloading and preparing to play: `{target_file['name']}`...")
-
-    os.makedirs("temp", exist_ok=True)
-    local_path = f"temp/{target_file['id']}.mp3"
+    # 4. Storage processing and internal caching engine interface layer
+    await ctx.send(f"Processing media allocation data for: `{target_file['name']}`...")
 
     if ctx.voice_client.is_playing():
         ctx.voice_client.stop()
 
+    # Throw synchronous drive operations down a decoupled task worker loop thread pool executor
     loop = asyncio.get_event_loop()
-    success = await loop.run_in_executor(
-        None, drive_manager.download_file, target_file['id'], local_path
+    local_path, success = await loop.run_in_executor(
+        None, drive_manager.get_or_download_track, target_file['id'], target_file['name']
     )
 
-    if success:
+    if success and local_path:
         try:
             audio_source = discord.FFmpegPCMAudio(local_path)
             ctx.voice_client.play(
@@ -145,7 +137,7 @@ async def play(ctx, *, user_input: str):
         except Exception as e:
             await ctx.send(f"Failed to play audio stream via FFmpeg: {e}")
     else:
-        await ctx.send("Could not retrieve file from Google Drive.")
+        await ctx.send("Could not retrieve or process data stream from file distribution services.")
 
 # 3. Asynchronous Quart Web Server Configuration
 web_app = Quart(__name__)
@@ -153,19 +145,15 @@ web_app = Quart(__name__)
 @web_app.route('/')
 async def home():
     """Health check homepage endpoint for Render."""
-    return "Bot is alive and running 24/7!"
+    return "Bot is alive and running 24/7 with active 100MB LRU storage caching!"
 
 # 4. Joint Dual-Process Execution Layer
 async def main():
-    # Dynamically read port values injected via Render dashboard environment maps
     port = int(os.getenv("PORT", 10000))
     
-    # Fire up the lightweight asynchronous web layer in background process routine
     loop = asyncio.get_event_loop()
-    # Start Quart server (without use_reloader)
     loop.create_task(web_app.run_task(host="0.0.0.0", port=port))
     
-    # Authenticate and engage core Discord event architecture loops
     token = os.getenv('DISCORD_TOKEN')
     if not token:
         raise ValueError("Critical Error: 'DISCORD_TOKEN' environment variable is missing!")
