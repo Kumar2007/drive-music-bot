@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 from quart import Quart
 import asyncio
+import re
 from drive_utils import GoogleDriveManager
 
 # 1. Initialize the Discord Bot
@@ -94,7 +95,13 @@ async def play(ctx, *, user_input: str):
     else:
         query = user_input.lower().strip()
         # Filter files where the query substring is inside the filename
-        matches = [f for f in files if query in f['name'].lower()]
+        # NEW LOGIC: Checks for exact word boundaries
+        matches = []
+        for f in files:
+            filename_lower = f['name'].lower()
+            # \b matches the beginning and end of a specific word
+            if re.search(rf"\b{re.escape(query)}\b", filename_lower):
+                matches.append(f)
 
         if not matches:
             return await ctx.send(f"🔍 No tracks found matching `{user_input}`.")
