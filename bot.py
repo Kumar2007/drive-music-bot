@@ -68,29 +68,60 @@ async def list_tracks(ctx):
     await ctx.send(response)
 
 @bot.command(name="play")
-async def play(ctx, track_number: int):
-    """Downloads a file by index from Drive and streams it through voice."""
+async def play(ctx, *, user_input: str):
+    """Plays a track by index number or by searching part of its name."""
     if not ctx.voice_client:
         return await ctx.send("I need to be in a voice channel first! Use `!join`.")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
+    # 1. Fetch the latest file list from Drive
     files = drive_manager.list_audio_files(FOLDER_ID)
-    if not files or track_number < 1 or track_number > len(files):
-        return await ctx.send("Invalid track number. Use `!list` to see options.")
+    if not files:
+        return await ctx.send("The Google Drive music folder is empty.")
 
-    target_file = files[track_number - 1]
+    target_file = None
+
+    # 2. Check if the user typed a direct track number
+    if user_input.isdigit():
+        track_number = int(user_input)
+        if 1 <= track_number <= len(files):
+            target_file = files[track_number - 1]
+        else:
+            return await ctx.send(f"Invalid track number. Choose 1 to {len(files)}.")
+    
+    # 3. If it's not a number, run the search engine logic
+    else:
+        query = user_input.lower().strip()
+        # Filter files where the query substring is inside the filename
+        matches = [f for f in files if query in f['name'].lower()]
+
+        if not matches:
+            return await ctx.send(f"🔍 No tracks found matching `{user_input}`.")
+        
+        elif len(matches) == 1:
+            # Only one match found! Play it immediately
+            target_file = matches[0]
+            await ctx.send(f"🎯 Exact match found!")
+        
+        else:
+            # Multiple matches found! List them and ask the user to choose
+            response = f"🔍 Multiple matches found for `{user_input}`. Please type `!play [number]` with the correct track:\n\n"
+            for f in matches:
+                # Find the original index from the main files list
+                orig_index = files.index(f) + 1
+                response += f"**[{orig_index}]** {f['name']}\n"
+            return await ctx.send(response)
+
+    # 4. Physical execution block (The download and stream logic you already wrote)
     await ctx.send(f"Downloading and preparing to play: `{target_file['name']}`...")
 
-    # Create local temp path for audio streaming
     os.makedirs("temp", exist_ok=True)
     local_path = f"temp/{target_file['id']}.mp3"
 
-    # Stop current playing context if active
     if ctx.voice_client.is_playing():
         ctx.voice_client.stop()
 
-    # Thread-safe download handler
     loop = asyncio.get_event_loop()
     success = await loop.run_in_executor(
         None, drive_manager.download_file, target_file['id'], local_path
@@ -98,7 +129,6 @@ async def play(ctx, track_number: int):
 
     if success:
         try:
-            # Load file directly into Discord voice via FFmpeg
             audio_source = discord.FFmpegPCMAudio(local_path)
             ctx.voice_client.play(
                 audio_source, 
