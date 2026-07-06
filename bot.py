@@ -15,6 +15,10 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# CRUCIAL HOTFIX: Remove the built-in discord.py help command 
+# so our custom embed menu can take its place!
+bot.remove_command("help")
+
 try:
     drive_manager = GoogleDriveManager()
 except Exception as e:
