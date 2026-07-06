@@ -41,16 +41,23 @@ class GuildSession:
     def toggle_shuffle(self):
         if not self.queue:
             return False
+            
         self.is_shuffled = not self.is_shuffled
         if self.is_shuffled:
+            # 1. Save a reference to the track currently playing before shuffling
+            current_track = self.get_current_track()
+            
+            # 2. Generate a randomized mapping layout of indices
             self.shuffled_order = list(range(len(self.queue)))
             random.shuffle(self.shuffled_order)
-            if 0 <= self.current_index < len(self.queue):
-                if self.current_index in self.shuffled_order:
-                    self.shuffled_order.remove(self.current_index)
-                    self.shuffled_order.insert(0, self.current_index)
-            self.current_index = 0
+            
+            # 3. Find where our current track is inside the new shuffled layout
+            if current_track:
+                orig_idx = self.queue.index(current_track)
+                # Update our session pointer to match its new randomized array position
+                self.current_index = self.shuffled_order.index(orig_idx)
         else:
+            # Revert smoothly to true chronological index position
             if self.shuffled_order and 0 <= self.current_index < len(self.shuffled_order):
                 self.current_index = self.shuffled_order[self.current_index]
         return self.is_shuffled
