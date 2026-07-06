@@ -6,6 +6,7 @@ import asyncio
 import re
 import traceback
 import sys
+import random
 from drive_utils import GoogleDriveManager
 
 intents = discord.Intents.default()
@@ -22,6 +23,117 @@ except Exception as e:
 
 FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
 
+# --- GLOBAL SESSION MANAGER ---
+class GuildSession:
+    def __init__(self):
+        self.queue = []            # Original chronological track list from Google Drive
+        self.current_index = -1     # Pointer to the currently playing track index
+        self.is_shuffled = False   # Toggle state for shuffle
+        self.shuffled_order = []   # Array of randomized track index pointers
+
+    def set_tracks(self, tracks):
+        self.queue = tracks
+        self.current_index = -1
+        self.is_shuffled = False
+        self.shuffled_order = []
+
+    def toggle_shuffle(self):
+        if not self.queue:
+            return False
+        self.is_shuffled = not self.is_shuffled
+        if self.is_shuffled:
+            # Generate a randomized mapping layout of indices
+            self.shuffled_order = list(range(len(self.queue)))
+            random.shuffle(self.shuffled_order)
+            # If a track is currently playing, bring its tracking index to the front of history
+            if 0 <= self.current_index < len(self.queue):
+                if self.current_index in self.shuffled_order:
+                    self.shuffled_order.remove(self.current_index)
+                    self.shuffled_order.insert(0, self.current_index)
+            self.current_index = 0
+        else:
+            # Revert smoothly to true index position
+            if self.shuffled_order and 0 <= self.current_index < len(self.shuffled_order):
+                self.current_index = self.shuffled_order[self.current_index]
+        return self.is_shuffled
+
+    def get_current_track(self):
+        if not self.queue:
+            return None
+        idx = self.shuffled_order[self.current_index] if self.is_shuffled else self.current_index
+        if 0 <= idx < len(self.queue):
+            return self.queue[idx]
+        return None
+
+    def advance(self):
+        if not self.queue:
+            return False
+        limit = len(self.shuffled_order) if self.is_shuffled else len(self.queue)
+        if self.current_index + 1 < limit:
+            self.current_index += 1
+            return True
+        return False
+
+    def step_back(self):
+        if not self.queue:
+            return False
+        if self.current_index - 1 >= 0:
+            self.current_index -= 1
+            return True
+        return False
+
+# Single global active instance state
+session = GuildSession()
+
+# --- INTERNAL HELPER AUDIO STREAM ENGINE ---
+async def start_track_stream(ctx, seek_time=None):
+    target_file = session.get_current_track()
+    if not target_file:
+        return
+
+    # Connection check
+    if not ctx.voice_client:
+        if ctx.author.voice:
+            await ctx.author.voice.channel.connect()
+        else:
+            return await ctx.send("You must be in a voice room to listen!")
+
+    await ctx.send(f"Processing Track: `{target_file['name']}`" + (f" (Seeking to {seek_time}s)..." if seek_time else "..."))
+
+    if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
+        ctx.voice_client.stop()
+
+    loop = asyncio.get_event_loop()
+    local_path, success = await loop.run_in_executor(
+        None, drive_manager.get_or_download_track, target_file['id'], target_file['name']
+    )
+
+    if success and local_path:
+        try:
+            # Add FFmpeg native timestamp flags if explicitly passed
+            ffmpeg_options = f"-ss {seek_time}" if seek_time else None
+            audio_source = discord.FFmpegPCMAudio(local_path, options=ffmpeg_options)
+            
+            # Autoplay Hook callback triggers next song when this lambda exits
+            ctx.voice_client.play(
+                audio_source, 
+                after=lambda e: bot.loop.create_task(handle_autoplay_next(ctx, e))
+            )
+            await ctx.send(f"🎶 Now playing: `{target_file['name']}`")
+        except Exception as e:
+            await ctx.send(f"Failed to play stream via FFmpeg: {e}")
+    else:
+        await ctx.send("Could not retrieve track from Google Drive workspace storage.")
+
+async def handle_autoplay_next(ctx, error):
+    if error:
+        print(f"Autoplay stream feedback error report: {error}")
+    # Proceed to next song automatically if one remains in queue sequence
+    if session.advance():
+        await start_track_stream(ctx)
+
+# --- COMMANDS ---
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
@@ -32,7 +144,6 @@ async def on_message(message):
     print(f"📩 [RAW MESSAGE] Author: {message.author} | Content: '{message.content}'")
     await bot.process_commands(message)
 
-# DIAGNOSTIC EXCEPTION CATCHER: Stops silent command crashes
 @bot.event
 async def on_command_error(ctx, error):
     print(f"❌ [COMMAND ERROR] Triggered by '{ctx.message.content}': {error}", file=sys.stderr)
@@ -70,79 +181,136 @@ async def list_tracks(ctx):
     files = drive_manager.list_audio_files(FOLDER_ID)
     if not files:
         return await ctx.send("No audio files found in the specified folder.")
+    
+    session.queue = files  # Keep list cache hot inside state machine
+    
     response = "**Available Tracks:**\n"
+    if session.is_shuffled:
+        response += "*(Shuffle Mode Active)*\n"
     for idx, f in enumerate(files, 1):
         response += f"{idx}. `{f['name']}`\n"
     await ctx.send(response)
 
 @bot.command(name="play")
-async def play(ctx, *, user_input: str):
+async def play(ctx, *, user_input: str = None):
     print(f"🎵 !play command triggered with input: {user_input}")
     if not drive_manager:
         return await ctx.send("Google Drive system is misconfigured.")
 
-    if not ctx.voice_client:
-        if ctx.author.voice:
-            print(f"Connecting to channel: {ctx.author.voice.channel.name}")
-            await ctx.author.voice.channel.connect()
-        else:
-            return await ctx.send("You need to be in a voice channel so I know where to join!")
-    else:
-        if ctx.author.voice and ctx.voice_client.channel != ctx.author.voice.channel:
-            await ctx.voice_client.move_to(ctx.author.voice.channel)
-
-    files = drive_manager.list_audio_files(FOLDER_ID)
-    if not files:
+    # Fetch total manifest from Drive if not cached
+    if not session.queue:
+        session.queue = drive_manager.list_audio_files(FOLDER_ID)
+    if not session.queue:
         return await ctx.send("The Google Drive music folder is empty.")
 
-    target_file = None
+    # Handle typing pure "!play" to unpause standard audio feeds
+    if user_input is None:
+        if ctx.voice_client and ctx.voice_client.is_paused():
+            ctx.voice_client.resume()
+            return await ctx.send("▶️ Resumed track playback.")
+        elif session.current_index == -1:
+            session.current_index = 0
+            await start_track_stream(ctx)
+            return
+        else:
+            return await ctx.send("Already playing or no active queue selected. Use `!play <number/name>`")
 
     if user_input.isdigit():
         track_number = int(user_input)
-        if 1 <= track_number <= len(files):
-            target_file = files[track_number - 1]
+        if 1 <= track_number <= len(session.queue):
+            if session.is_shuffled:
+                target_idx = track_number - 1
+                if target_idx in session.shuffled_order:
+                    session.shuffled_order.remove(target_idx)
+                    session.shuffled_order.insert(0, target_idx)
+                session.current_index = 0
+            else:
+                session.current_index = track_number - 1
+            await start_track_stream(ctx)
         else:
-            return await ctx.send(f"Invalid track number. Choose 1 to {len(files)}.")
+            await ctx.send(f"Invalid track number. Choose 1 to {len(session.queue)}.")
     else:
         query = user_input.lower().strip()
-        matches = []
-        for f in files:
-            filename_lower = f['name'].lower()
-            if re.search(rf"\b{re.escape(query)}\b", filename_lower):
-                matches.append(f)
+        matches = [f for f in session.queue if re.search(rf"\b{re.escape(query)}\b", f['name'].lower())]
 
         if not matches:
             return await ctx.send(f"🔍 No tracks found matching: `{user_input}`.")
         elif len(matches) == 1:
-            target_file = matches[0]
+            orig_idx = session.queue.index(matches[0])
+            if session.is_shuffled:
+                if orig_idx in session.shuffled_order:
+                    session.shuffled_order.remove(orig_idx)
+                    session.shuffled_order.insert(0, orig_idx)
+                session.current_index = 0
+            else:
+                session.current_index = orig_idx
+            await start_track_stream(ctx)
         else:
             response = f"🔍 Multiple matches found for `{user_input}`. Choose a track number:\n\n"
             for f in matches:
-                orig_index = files.index(f) + 1
+                orig_index = session.queue.index(f) + 1
                 response += f"**[{orig_index}]** {f['name']}\n"
-            return await ctx.send(response)
+            await ctx.send(response)
 
-    await ctx.send(f"Processing: `{target_file['name']}`...")
-
-    if ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-
-    loop = asyncio.get_event_loop()
-    local_path, success = await loop.run_in_executor(
-        None, drive_manager.get_or_download_track, target_file['id'], target_file['name']
-    )
-
-    if success and local_path:
-        try:
-            audio_source = discord.FFmpegPCMAudio(local_path)
-            ctx.voice_client.play(
-                audio_source, after=lambda e: print(f"Finished playing. Errors: {e}")
-            )
-            await ctx.send(f"🎶 Now playing: `{target_file['name']}`")
-        except Exception as e:
-            await ctx.send(f"Failed to play audio stream via FFmpeg: {e}")
+@bot.command(name="pause")
+async def pause(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸️ Paused playback.")
     else:
-        await ctx.send("Could not retrieve track from Google Drive.")
+        await ctx.send("Nothing is currently playing.")
+
+@bot.command(name="resume")
+async def resume(ctx):
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶️ Resumed track playback.")
+    else:
+        await ctx.send("Playback is not paused.")
+
+@bot.command(name="stop")
+async def stop(ctx):
+    if ctx.voice_client:
+        ctx.voice_client.stop()
+        session.current_index = -1
+        await ctx.send("⏹️ Stopped playback and reset queue tracking pointer.")
+    else:
+        await ctx.send("I'm not in a voice channel.")
+
+@bot.command(name="next")
+async def next_track(ctx):
+    if session.advance():
+        await start_track_stream(ctx)
+    else:
+        await ctx.send("🏁 Reached the end of your playlist queue selection.")
+
+@bot.command(name="previous")
+async def previous_track(ctx):
+    if session.step_back():
+        await start_track_stream(ctx)
+    else:
+        await ctx.send("⏮️ Already sitting at the first track of the queue.")
+
+@bot.command(name="shuffle")
+async def shuffle_queue(ctx):
+    if not session.queue:
+        session.queue = drive_manager.list_audio_files(FOLDER_ID)
+    if not session.queue:
+        return await ctx.send("Cannot shuffle an empty track queue directory.")
+        
+    shuf_state = session.toggle_shuffle()
+    if shuf_state:
+        await ctx.send("🔀 **Shuffle Mode Activated.** Tracks will play in randomized order sequence.")
+    else:
+        await ctx.send("🔁 **Shuffle Mode Deactivated.** Returning back to original folder listing sequence.")
+
+@bot.command(name="seek")
+async def seek_track(ctx, seconds: int):
+    if not ctx.voice_client or (not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()):
+        return await ctx.send("There is no active stream to seek timestamps on.")
+    
+    # Reload current active file frame pointer with explicit seek seconds passed through to FFmpeg
+    await start_track_stream(ctx, seek_time=seconds)
 
 web_app = Quart(__name__)
 
