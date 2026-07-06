@@ -42,24 +42,33 @@ class GuildSession:
         if not self.queue:
             return False
             
-        self.is_shuffled = not self.is_shuffled
-        if self.is_shuffled:
-            # 1. Save a reference to the track currently playing before shuffling
-            current_track = self.get_current_track()
-            
-            # 2. Generate a randomized mapping layout of indices
+        if not self.is_shuffled:
+            # --- SWITCHING TO SHUFFLE MODE ---
+            # 1. Generate the randomized index deck layout first
             self.shuffled_order = list(range(len(self.queue)))
             random.shuffle(self.shuffled_order)
             
-            # 3. Find where our current track is inside the new shuffled layout
-            if current_track:
-                orig_idx = self.queue.index(current_track)
-                # Update our session pointer to match its new randomized array position
-                self.current_index = self.shuffled_order.index(orig_idx)
+            # 2. Map the current index safely if a song was already playing
+            if 0 <= self.current_index < len(self.queue):
+                # Save the absolute chronological index position
+                playing_idx = self.current_index 
+                # Align our session pointer to wherever that index landed in the shuffled deck
+                self.current_index = self.shuffled_order.index(playing_idx)
+            else:
+                self.current_index = 0
+                
+            self.is_shuffled = True
         else:
-            # Revert smoothly to true chronological index position
+            # --- RETURNING TO NORMAL MODE ---
+            # Revert smoothly back to true chronological index position
             if self.shuffled_order and 0 <= self.current_index < len(self.shuffled_order):
                 self.current_index = self.shuffled_order[self.current_index]
+            else:
+                self.current_index = 0
+                
+            self.is_shuffled = False
+            self.shuffled_order = []
+            
         return self.is_shuffled
 
     def get_current_track(self):
