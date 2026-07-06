@@ -130,7 +130,12 @@ async def handle_autoplay_next(ctx, error):
     if error:
         print(f"Autoplay stream feedback error report: {error}")
         
-    # BUGFIX: If the song ended because of a manual command action (!next/!play/!seek), abort autoplay intervention
+    # DISCONNECT SAFETY CHECK: If we disconnected manually (!leave), kill the autoplay engine immediately
+    if not ctx.voice_client or not ctx.voice_client.is_connected():
+        print("ℹ️ Autoplay aborted because the bot disconnected from the voice channel.")
+        return
+
+    # COMMAND OVERRIDE CHECK: If the song ended because of !next/!play/!seek, abort autoplay intervention
     if session.manual_skip:
         session.manual_skip = False
         return
@@ -173,6 +178,7 @@ async def join(ctx):
 async def leave(ctx):
     print("📤 !leave command triggered")
     if ctx.voice_client:
+        session.manual_skip = True  # Signal to block the cascading autoplay loop
         await ctx.voice_client.disconnect()
         await ctx.send("Disconnected from voice channel.")
     else:
