@@ -338,6 +338,65 @@ async def seek_track(ctx, seconds: int):
     
     await start_track_stream(ctx, seek_time=seconds)
 
+@bot.command(name="help")
+async def help_command(ctx):
+    print("❓ !help command triggered")
+    
+    embed = discord.Embed(
+        title="🎵 DriveMusicBot Command Menu",
+        description="Control your Google Drive media stream with these commands. Prefix: `!`",
+        color=discord.Color.blue()
+    )
+    
+    # Connection Commands
+    embed.add_field(
+        name="🔌 Connection",
+        value=(
+            "`!join` - Summons the bot to your current voice channel.\n"
+            "`!leave` - Disconnects the bot from voice and stops playback."
+        ),
+        inline=False
+    )
+    
+    # Playback Commands
+    embed.add_field(
+        name="▶️ Playback Controls",
+        value=(
+            "`!list` - Fetches and displays all available tracks from Google Drive.\n"
+            "`!play` - Resumes paused music. If idle, starts the queue from track 1.\n"
+            "`!play <number>` - Jumps directly to a specific track number from the list.\n"
+            "`!play <name>` - Searches for a track name using case-insensitive keyword matching."
+        ),
+        inline=False
+    )
+    
+    # Audio Modifiers
+    embed.add_field(
+        name="🎛️ Audio Navigation",
+        value=(
+            "`!pause` - Pauses the current track.\n"
+            "`!resume` - Resumes a paused track.\n"
+            "`!stop` - Completely halts playback and resets the queue position.\n"
+            "`!seek <seconds>` - Skips instantly to a specific timestamp in the song."
+        ),
+        inline=False
+    )
+    
+    # Queue Modifiers
+    embed.add_field(
+        name="🔀 Queue & Playlist Operations",
+        value=(
+            "`!next` - Skips forward to the next song in the queue sequence.\n"
+            "`!previous` - Steps backward to the previously played track.\n"
+            "`!shuffle` - Toggles randomized playback mode on or off."
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Engineered for optimized low-resource cloud streaming.")
+    await ctx.send(embed=embed)
+
+
 web_app = Quart(__name__)
 
 @web_app.route('/')
