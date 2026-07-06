@@ -4,17 +4,17 @@ from discord.ext import commands
 from quart import Quart
 import asyncio
 import re
-import traceback
 import sys
-import random
+import traceback
 from drive_utils import GoogleDriveManager
 
+# --- INITS & CORE SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot.remove_command("help")
+bot.remove_command("help")  # Unregister default help to use our stylized embed card
 
 try:
     drive_manager = GoogleDriveManager()
@@ -24,85 +24,31 @@ except Exception as e:
 
 FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
 
-# --- GLOBAL HYBRID SESSION MANAGER ---
-class GuildSession:
+# --- LEAN STATE STORAGE ---
+class JukeboxSession:
     def __init__(self):
-        self.master_catalog = []   # Cached chronological file list from Google Drive
-        self.queue = []            # User-curated custom queue list
-        self.catalog_index = -1    # Pointer for default folder playback mode
-        self.queue_index = -1      # Pointer for custom queue playback mode
-        self.is_shuffled = False   
-        self.manual_skip = False   
+        self.catalog = []        # Flat chronological array of files fetched from Drive
+        self.current_index = -1  # Single tracking pointer
+        self.manual_skip = False # Core interception flag to prevent autoplay race-conditions
 
-    def clear_all(self):
-        self.queue = []
-        self.catalog_index = -1
-        self.queue_index = -1
-        self.is_shuffled = False
+session = JukeboxSession()
 
-    def in_queue_mode(self):
-        # We are only in queue mode if the user actually added songs to the custom queue
-        return len(self.queue) > 0
-
-    def get_current_track(self):
-        if self.in_queue_mode():
-            if 0 <= self.queue_index < len(self.queue):
-                return self.queue[self.queue_index]
-        else:
-            if 0 <= self.catalog_index < len(self.master_catalog):
-                return self.master_catalog[self.catalog_index]
-        return None
-
-    def advance(self):
-        if self.in_queue_mode():
-            if self.is_shuffled:
-                self.queue_index = random.randint(0, len(self.queue) - 1)
-                return True
-            elif self.queue_index + 1 < len(self.queue):
-                self.queue_index += 1
-                return True
-            return False
-        else:
-            if not self.master_catalog:
-                return False
-            if self.is_shuffled:
-                self.catalog_index = random.randint(0, len(self.master_catalog) - 1)
-                return True
-            elif self.catalog_index + 1 < len(self.master_catalog):
-                self.catalog_index += 1
-                return True
-            return False
-
-    def step_back(self):
-        if self.in_queue_mode():
-            if self.queue_index - 1 >= 0:
-                self.queue_index -= 1
-                return True
-            return False
-        else:
-            if not self.master_catalog:
-                return False
-            if self.catalog_index - 1 >= 0:
-                self.catalog_index -= 1
-                return True
-            return False
-
-session = GuildSession()
-
-# --- INTERNAL HELPER AUDIO STREAM ENGINE ---
+# --- CORE STREAM PROCESS ENGINE ---
 async def start_track_stream(ctx, seek_time=None):
-    target_file = session.get_current_track()
-    if not target_file:
+    if not (0 <= session.current_index < len(session.catalog)):
         return
+
+    target_file = session.catalog[session.current_index]
 
     if not ctx.voice_client:
         if ctx.author.voice:
             await ctx.author.voice.channel.connect()
         else:
-            return await ctx.send("You must be in a voice room to listen!")
+            return await ctx.send("You must be in a voice channel to stream music!")
 
     await ctx.send(f"Processing Track: `{target_file['name']}`" + (f" (Seeking to {seek_time}s)..." if seek_time else "..."))
 
+    # If something is currently playing, force stop it to recreate the FFmpeg instance safely
     if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
         session.manual_skip = True
         ctx.voice_client.stop()
@@ -125,50 +71,41 @@ async def start_track_stream(ctx, seek_time=None):
             )
             await ctx.send(f"🎶 Now playing: `{target_file['name']}`")
         except Exception as e:
-            await ctx.send(f"Failed to play stream via FFmpeg: {e}")
+            await ctx.send(f"Failed to load stream via FFmpeg process: {e}")
     else:
-        await ctx.send("Could not retrieve track from Google Drive workspace storage.")
+        await ctx.send("Could not retrieve track files from Google Drive cloud layout storage.")
 
 async def handle_autoplay_next(ctx, error):
     if error:
-        print(f"Autoplay stream error log entry: {error}")
+        print(f"Autoplay process stream error: {error}")
     if not ctx.voice_client or not ctx.voice_client.is_connected():
         return
     if session.manual_skip:
         session.manual_skip = False
         return
 
-    if session.advance():
+    # Advance cleanly to the next chronological index
+    if session.current_index + 1 < len(session.catalog):
+        session.current_index += 1
         await start_track_stream(ctx)
     else:
-        await ctx.send("🏁 Reached the end of available playback tracks.")
+        await ctx.send("🏁 Reached the end of your Google Drive folder playlist loop.")
 
-def resolve_track_from_catalog(user_input):
-    if not session.master_catalog:
-        return None, "Catalog empty. Run `!list` first."
-    
-    if user_input.isdigit():
-        idx = int(user_input) - 1
-        if 0 <= idx < len(session.master_catalog):
-            return [session.master_catalog[idx]], None
-        return None, f"Invalid catalog number. Choose 1 to {len(session.master_catalog)}."
-    
-    query = user_input.lower().strip()
-    matches = [f for f in session.master_catalog if re.search(rf"\b{re.escape(query)}\b", f['name'].lower())]
-    if not matches:
-        return None, f"🔍 No files found matching: `{user_input}`."
-    return matches, None
-
-# --- COMMANDS ---
+# --- INTERACTION HOOKS & COMMANDS ---
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user.name}")
+    print(f"Minimalist Jukebox Live as: {bot.user.name}")
     print("------")
 
 @bot.event
 async def on_message(message):
     await bot.process_commands(message)
+
+@bot.event
+async def on_command_error(ctx, error):
+    print(f"❌ [ERROR] {ctx.command.name if ctx.command else 'Unknown'}: {error}", file=sys.stderr)
+    await ctx.send(f"⚠️ App Exception raised: `{error}`")
 
 @bot.command(name="join")
 async def join(ctx):
@@ -178,143 +115,80 @@ async def join(ctx):
             await ctx.voice_client.move_to(channel)
         else:
             await channel.connect()
-        await ctx.send(f"Joined **{channel.name}**!")
+        await ctx.send(f"Connected to **{channel.name}**.")
     else:
-        await ctx.send("You need to be in a voice channel first!")
+        await ctx.send("You need to enter a voice room first!")
 
 @bot.command(name="leave")
 async def leave(ctx):
     if ctx.voice_client:
         session.manual_skip = True
         await ctx.voice_client.disconnect()
-        session.clear_all()
-        await ctx.send("Disconnected from voice channel and cleared active workspace queue state.")
+        session.current_index = -1
+        await ctx.send("Left voice room and reset playback states.")
     else:
-        await ctx.send("I'm not in a voice channel!")
+        await ctx.send("I am not actively in a voice room right now.")
 
 @bot.command(name="list")
-async def list_catalog(ctx):
+async def list_tracks(ctx):
     if not drive_manager:
-        return await ctx.send("Google Drive system is misconfigured.")
-    await ctx.send("Fetching master track catalog from Google Drive...")
+        return await ctx.send("Google Drive configurations are missing.")
+    
+    await ctx.send("Scanning your Google Drive folder layout sequence...")
     files = drive_manager.list_audio_files(FOLDER_ID)
     if not files:
-        return await ctx.send("No audio files found in the specified folder.")
+        return await ctx.send("No audio files detected inside your specified Drive target directory.")
     
-    session.master_catalog = files  
-    response = "**📁 Google Drive Master Catalog:**\n*(Type `!play <number>` to play directly, or `!add <number>` to build a queue)*\n\n"
+    session.catalog = files  # Lock down alphabetical sequence mapping
+    response = "**📁 Google Drive Jukebox Playlist Tracker:**\n\n"
     for idx, f in enumerate(files, 1):
-        response += f"{idx}. `{f['name']}`\n"
+        if idx - 1 == session.current_index and ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+            response += f"▶️ **{idx}. {f['name']}** *(Now Playing)*\n"
+        else:
+            response += f"{idx}. `{f['name']}`\n"
     await ctx.send(response)
 
 @bot.command(name="play")
 async def play(ctx, *, user_input: str = None):
-    if not session.master_catalog:
-        session.master_catalog = drive_manager.list_audio_files(FOLDER_ID)
+    # Ensure our track catalog baseline is mapped out
+    if not session.catalog:
+        session.catalog = drive_manager.list_audio_files(FOLDER_ID)
+        if not session.catalog:
+            return await ctx.send("Your Google Drive media directory seems to be empty.")
 
+    # Plain '!play' behaves as Resume or Start From Beginning
     if user_input is None:
         if ctx.voice_client and ctx.voice_client.is_paused():
             ctx.voice_client.resume()
             return await ctx.send("▶️ Resumed track playback.")
-        
-        # Check fallback positions if typing plain !play
-        if session.in_queue_mode():
-            if session.queue_index == -1:
-                session.queue_index = 0
-            await start_track_stream(ctx)
-        else:
-            if session.catalog_index == -1:
-                session.catalog_index = 0
-            await start_track_stream(ctx)
+        if session.current_index == -1:
+            session.current_index = 0
+        await start_track_stream(ctx)
         return
 
-    matches, err = resolve_track_from_catalog(user_input)
-    if err:
-        return await ctx.send(err)
-    if len(matches) > 1:
-        response = f"🔍 Multiple matches found. Pick a precise index target:\n\n"
-        for f in matches:
-            orig_idx = session.master_catalog.index(f) + 1
-            response += f"**[{orig_idx}]** {f['name']}\n"
-        return await ctx.send(response)
-
-    track = matches[0]
-    
-    # If custom queue is active, we append or override inside queue
-    if session.in_queue_mode():
-        session.queue.insert(session.queue_index + 1, track)
-        session.queue_index += 1
-        await ctx.send(f"Inserting into active queue playlist line...")
-    else:
-        # Jukebox default mode: just jump straight to the catalog position and flow naturally
-        session.catalog_index = session.master_catalog.index(track)
-        
-    await start_track_stream(ctx)
-
-@bot.command(name="add")
-async def add(ctx, *, user_input: str):
-    if not session.master_catalog:
-        session.master_catalog = drive_manager.list_audio_files(FOLDER_ID)
-        
-    matches, err = resolve_track_from_catalog(user_input)
-    if err:
-        return await ctx.send(err)
-    if len(matches) > 1:
-        response = f"🔍 Multiple matches found. Be more specific:\n\n"
-        for f in matches:
-            orig_idx = session.master_catalog.index(f) + 1
-            response += f"**[{orig_idx}]** {f['name']}\n"
-        return await ctx.send(response)
-    
-    track = matches[0]
-    session.queue.append(track)
-    await ctx.send(f"➕ Added to Queue at **#{len(session.queue)}**: `{track['name']}`")
-
-@bot.command(name="queue")
-async def show_queue(ctx):
-    if not session.in_queue_mode():
-        return await ctx.send("The custom queue playlist is empty. Currently flowing natively through the Google Drive folder layout. Use `!add <item>` to create a queue!")
-    
-    response = "**🎵 Active Custom Playlist Queue:**\n"
-    for idx, f in enumerate(session.queue):
-        if idx == session.queue_index:
-            response += f"▶️ **{idx + 1}. {f['name']}** *(Now Playing)*\n"
-        else:
-            response += f"{idx + 1}. `{f['name']}`\n"
-    await ctx.send(response)
-
-@bot.command(name="delete")
-async def delete_track(ctx, position: int):
-    if not session.in_queue_mode():
-        return await ctx.send("There is no custom queue active to delete from.")
-    
-    idx = position - 1
-    if idx < 0 or idx >= len(session.queue):
-        return await ctx.send("Invalid position index calculation bounds.")
-    
-    is_playing_target = (idx == session.queue_index)
-    removed = session.queue.pop(idx)
-    await ctx.send(f"🗑️ Removed custom queue track: `{removed['name']}`")
-    
-    if idx < session.queue_index:
-        session.queue_index -= 1
-        
-    if is_playing_target:
-        if len(session.queue) == 0:
-            session.manual_skip = True
-            ctx.voice_client.stop()
-            session.queue_index = -1
-            await ctx.send("⏹️ Custom queue empty. Falling back to default catalog playback states.")
-        else:
-            if session.queue_index >= len(session.queue):
-                session.queue_index = 0
+    # Handle Target Selection Input (e.g., !play 3 or !play star)
+    if user_input.isdigit():
+        idx = int(user_input) - 1
+        if 0 <= idx < len(session.catalog):
+            session.current_index = idx
             await start_track_stream(ctx)
-
-@bot.command(name="clear")
-async def clear_queue_cmd(ctx):
-    session.queue = []
-    session.queue_index = -1
-    await ctx.send("🔄 **Custom Queue Cleared.** Restoring default continuous Drive folder autoplay flow.")
+        else:
+            await ctx.send(f"Invalid item position index. Select 1 to {len(session.catalog)}.")
+    else:
+        query = user_input.lower().strip()
+        matches = [f for f in session.catalog if re.search(rf"\b{re.escape(query)}\b", f['name'].lower())]
+        
+        if not matches:
+            return await ctx.send(f"🔍 No tracks found matching: `{user_input}`")
+        if len(matches) > 1:
+            response = "🔍 Multiple tracks matched your query. Use the specific track number:\n\n"
+            for f in matches:
+                orig_idx = session.catalog.index(f) + 1
+                response += f"**[{orig_idx}]** {f['name']}\n"
+            return await ctx.send(response)
+        
+        session.current_index = session.catalog.index(matches[0])
+        await start_track_stream(ctx)
 
 @bot.command(name="pause")
 async def pause(ctx):
@@ -326,68 +200,49 @@ async def pause(ctx):
 async def resume(ctx):
     if ctx.voice_client and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
-        await ctx.send("▶️ Resumed track playback.")
-
-@bot.command(name="stop")
-async def stop(ctx):
-    if ctx.voice_client:
-        session.manual_skip = True  
-        ctx.voice_client.stop()
-        session.clear_all()
-        await ctx.send("⏹️ Stopped playback and cleared all active playlist trackers.")
-
-@bot.command(name="next")
-async def next_track(ctx):
-    if session.advance():
-        await start_track_stream(ctx)
-    else:
-        await ctx.send("🏁 Reached the end of available playback tracks.")
-
-@bot.command(name="previous")
-async def previous_track(ctx):
-    if session.step_back():
-        await start_track_stream(ctx)
-    else:
-        await ctx.send("⏮️ Already sitting at the very first tracking target.")
-
-@bot.command(name="shuffle")
-async def shuffle_queue(ctx):
-    session.is_shuffled = not session.is_shuffled
-    if session.is_shuffled:
-        await ctx.send("🔀 **Shuffle Mode Activated.** Next tracks will be picked completely at random.")
-    else:
-        await ctx.send("🔁 **Shuffle Mode Deactivated.** Sequential pathing alignment restored.")
+        await ctx.send("▶️ Resumed playback.")
 
 @bot.command(name="seek")
-async def seek_track(ctx, seconds: int):
+async def seek(ctx, seconds: int):
     if not ctx.voice_client or (not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()):
-        return await ctx.send("There is no active stream to seek timestamps on.")
+        return await ctx.send("There is no active music stream to manipulate timestamps on.")
     await start_track_stream(ctx, seek_time=seconds)
 
 @bot.command(name="help")
-async def help_command(ctx):
+async def help_menu(ctx):
     embed = discord.Embed(
-        title="🎵 Hybrid DriveMusicBot Help Menu",
-        description="Works both as an automatic Jukebox or an On-Demand Playlist Planner. Prefix: `!`",
-        color=discord.Color.teal()
+        title="🎵 StreamJukebox System Help Menu",
+        description="Stream media sequentially direct from your Google Drive folder mapping layout. Prefix: `!`",
+        color=discord.Color.blue()
     )
     embed.add_field(
-        name="📻 Jukebox Mode (Default)",
-        value="`!list` - Scans folder files.\n`!play <num/name>` - Plays a track directly and automatically autoplays the rest of the folder in chronological order.\n`!next` / `!previous` - Moves forward/back through the Drive folder naturally.",
+        name="📁 Catalog Navigation",
+        value="`!list` - Lists all tracks in chronological order and shows what's playing.",
         inline=False
     )
     embed.add_field(
-        name="📋 Custom Queue Mode",
-        value="`!add <num/name>` - Builds an overriding custom queue. The bot instantly switches focus to this list!\n`!queue` - Inspects custom lineup elements.\n`!delete <pos>` - Removes tracks from custom list.\n`!clear` - Empties queue, reverting right back to natural folder autoplay loops.",
+        name="▶️ Flow Controls",
+        value="`!play` - Resumes a paused stream, or kicks off track #1.\n`!play <number>` - Jumps right to an exact list track number coordinate.\n`!play <keyword>` - Searches and locks onto a track match using basic text parameters.",
+        inline=False
+    )
+    embed.add_field(
+        name="🎛️ Timeline Modifiers",
+        value="`!pause` - Freezes current timeline play state.\n`!resume` - Continues music playback.\n`!seek <seconds>` - Fast-forwards/rewinds directly to a specific timestamp frame coordinate.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔌 Utility States",
+        value="`!join` - Forces bot to cross over into your voice room.\n`!leave` - Drops network voice socket pipelines completely and stops playback.",
         inline=False
     )
     await ctx.send(embed=embed)
 
+# --- QUART WEB PROCESS WRAPPER ---
 web_app = Quart(__name__)
 
 @web_app.route('/')
 async def home():
-    return "Hybrid Media System Status: ONLINE"
+    return "Jukebox Stream Server State: ONLINE"
 
 async def main():
     port = int(os.getenv("PORT", 10000))
@@ -404,4 +259,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot application terminated locally.")
+        print("Process terminated locally.")
