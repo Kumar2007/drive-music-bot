@@ -14,7 +14,7 @@ intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot.remove_command("help")  # Unregister default help to use our stylized embed card
+bot.remove_command("help")
 
 try:
     drive_manager = GoogleDriveManager()
@@ -27,18 +27,40 @@ FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
 # --- LEAN STATE STORAGE ---
 class JukeboxSession:
     def __init__(self):
-        self.catalog = []        # Flat chronological array of files fetched from Drive
-        self.current_index = -1  # Single tracking pointer
-        self.manual_skip = False # Core interception flag to prevent autoplay race-conditions
+        self.catalog = []            # Flat chronological array of files fetched from Drive
+        self.current_track_id = None # FIXED: Track by unique immutable ID string instead of fragile integer index
+        self.manual_skip = False     
 
-session = JukeboxSession()
+    def get_current_track(self):
+        # Look up the track object dynamically using the immutable ID
+        if not self.current_track_id or not self.catalog:
+            return None
+        for track in self.catalog:
+            if track['id'] == self.current_track_id:
+                return track
+        return None
+
+    def get_current_index(self):
+        # Derive the human-readable index on-the-fly for UI display
+        current_track = self.get_current_track()
+        if current_track and current_track in self.catalog:
+            return self.catalog.index(current_track)
+        return -1
+
+sessions = {}
+
+def get_session(guild_id) -> JukeboxSession:
+    if guild_id not in sessions:
+        sessions[guild_id] = JukeboxSession()
+    return sessions[guild_id]
 
 # --- CORE STREAM PROCESS ENGINE ---
 async def start_track_stream(ctx, seek_time=None):
-    if not (0 <= session.current_index < len(session.catalog)):
-        return
-
-    target_file = session.catalog[session.current_index]
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
+    
+    target_file = session.get_current_track()
+    if not target_file: return
 
     if not ctx.voice_client:
         if ctx.author.voice:
@@ -48,7 +70,6 @@ async def start_track_stream(ctx, seek_time=None):
 
     await ctx.send(f"Processing Track: `{target_file['name']}`" + (f" (Seeking to {seek_time}s)..." if seek_time else "..."))
 
-    # If something is currently playing, force stop it to recreate the FFmpeg instance safely
     if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
         session.manual_skip = True
         ctx.voice_client.stop()
@@ -76,26 +97,29 @@ async def start_track_stream(ctx, seek_time=None):
         await ctx.send("Could not retrieve track files from Google Drive cloud layout storage.")
 
 async def handle_autoplay_next(ctx, error):
-    if error:
-        print(f"Autoplay process stream error: {error}")
-    if not ctx.voice_client or not ctx.voice_client.is_connected():
-        return
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
+        
+    if error: print(f"Autoplay process stream error: {error}")
+    if not ctx.voice_client or not ctx.voice_client.is_connected(): return
     if session.manual_skip:
         session.manual_skip = False
         return
 
-    # Advance cleanly to the next chronological index
-    if session.current_index + 1 < len(session.catalog):
-        session.current_index += 1
+    # Dynamically find where our current track lives in the catalog *right now*
+    curr_idx = session.get_current_index()
+    if curr_idx != -1 and curr_idx + 1 < len(session.catalog):
+        next_track = session.catalog[curr_idx + 1]
+        session.current_track_id = next_track['id'] # Move reference forward safely
         await start_track_stream(ctx)
     else:
         await ctx.send("🏁 Reached the end of your Google Drive folder playlist loop.")
 
-# --- INTERACTION HOOKS & COMMANDS ---
+# --- COMMANDS ---
 
 @bot.event
 async def on_ready():
-    print(f"Minimalist Jukebox Live as: {bot.user.name}")
+    print(f"ID-Stabilized Jukebox Live as: {bot.user.name}")
     print("------")
 
 @bot.event
@@ -111,38 +135,41 @@ async def on_command_error(ctx, error):
 async def join(ctx):
     if ctx.author.voice:
         channel = ctx.author.voice.channel
-        if ctx.voice_client:
-            await ctx.voice_client.move_to(channel)
-        else:
-            await channel.connect()
+        if ctx.voice_client: await ctx.voice_client.move_to(channel)
+        else: await channel.connect()
         await ctx.send(f"Connected to **{channel.name}**.")
     else:
         await ctx.send("You need to enter a voice room first!")
 
 @bot.command(name="leave")
 async def leave(ctx):
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
     if ctx.voice_client:
         session.manual_skip = True
         await ctx.voice_client.disconnect()
-        session.current_index = -1
+        session.current_track_id = None
         await ctx.send("Left voice room and reset playback states.")
+        sessions.pop(ctx.guild.id, None)
     else:
         await ctx.send("I am not actively in a voice room right now.")
 
 @bot.command(name="list")
 async def list_tracks(ctx):
-    if not drive_manager:
-        return await ctx.send("Google Drive configurations are missing.")
+    if not drive_manager: return await ctx.send("Google Drive configurations are missing.")
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
     
     await ctx.send("Scanning your Google Drive folder layout sequence...")
     files = drive_manager.list_audio_files(FOLDER_ID)
-    if not files:
-        return await ctx.send("No audio files detected inside your specified Drive target directory.")
+    if not files: return await ctx.send("No audio files detected inside your specified Drive directory.")
     
-    session.catalog = files  # Lock down alphabetical sequence mapping
+    session.catalog = files  
     response = "**📁 Google Drive Jukebox Playlist Tracker:**\n\n"
+    active_track = session.get_current_track()
+    
     for idx, f in enumerate(files, 1):
-        if idx - 1 == session.current_index and ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+        if active_track and f['id'] == active_track['id'] and ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             response += f"▶️ **{idx}. {f['name']}** *(Now Playing)*\n"
         else:
             response += f"{idx}. `{f['name']}`\n"
@@ -150,27 +177,26 @@ async def list_tracks(ctx):
 
 @bot.command(name="play")
 async def play(ctx, *, user_input: str = None):
-    # Ensure our track catalog baseline is mapped out
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
+
     if not session.catalog:
         session.catalog = drive_manager.list_audio_files(FOLDER_ID)
-        if not session.catalog:
-            return await ctx.send("Your Google Drive media directory seems to be empty.")
+        if not session.catalog: return await ctx.send("Your Google Drive media directory seems to be empty.")
 
-    # Plain '!play' behaves as Resume or Start From Beginning
     if user_input is None:
         if ctx.voice_client and ctx.voice_client.is_paused():
             ctx.voice_client.resume()
             return await ctx.send("▶️ Resumed track playback.")
-        if session.current_index == -1:
-            session.current_index = 0
+        if not session.current_track_id:
+            session.current_track_id = session.catalog[0]['id']
         await start_track_stream(ctx)
         return
 
-    # Handle Target Selection Input (e.g., !play 3 or !play star)
     if user_input.isdigit():
         idx = int(user_input) - 1
         if 0 <= idx < len(session.catalog):
-            session.current_index = idx
+            session.current_track_id = session.catalog[idx]['id']
             await start_track_stream(ctx)
         else:
             await ctx.send(f"Invalid item position index. Select 1 to {len(session.catalog)}.")
@@ -178,8 +204,7 @@ async def play(ctx, *, user_input: str = None):
         query = user_input.lower().strip()
         matches = [f for f in session.catalog if re.search(rf"\b{re.escape(query)}\b", f['name'].lower())]
         
-        if not matches:
-            return await ctx.send(f"🔍 No tracks found matching: `{user_input}`")
+        if not matches: return await ctx.send(f"🔍 No tracks found matching: `{user_input}`")
         if len(matches) > 1:
             response = "🔍 Multiple tracks matched your query. Use the specific track number:\n\n"
             for f in matches:
@@ -187,7 +212,7 @@ async def play(ctx, *, user_input: str = None):
                 response += f"**[{orig_idx}]** {f['name']}\n"
             return await ctx.send(response)
         
-        session.current_index = session.catalog.index(matches[0])
+        session.current_track_id = matches[0]['id']
         await start_track_stream(ctx)
 
 @bot.command(name="pause")
@@ -211,7 +236,7 @@ async def seek(ctx, seconds: int):
 @bot.command(name="help")
 async def help_menu(ctx):
     embed = discord.Embed(
-        title="🎵 StreamJukebox System Help Menu",
+        title="🎵 Multi-Server StreamJukebox Help Menu",
         description="Stream media sequentially direct from your Google Drive folder mapping layout. Prefix: `!`",
         color=discord.Color.blue()
     )
@@ -237,12 +262,11 @@ async def help_menu(ctx):
     )
     await ctx.send(embed=embed)
 
-# --- QUART WEB PROCESS WRAPPER ---
 web_app = Quart(__name__)
 
 @web_app.route('/')
 async def home():
-    return "Jukebox Stream Server State: ONLINE"
+    return "Multi-Server Jukebox Server State: ONLINE"
 
 async def main():
     port = int(os.getenv("PORT", 10000))
@@ -250,13 +274,9 @@ async def main():
     loop.create_task(web_app.run_task(host="0.0.0.0", port=port))
     
     token = os.getenv('DISCORD_TOKEN')
-    if not token:
-        raise ValueError("Critical Error: 'DISCORD_TOKEN' environment variable is missing!")
-    async with bot:
-        await bot.start(token)
+    if not token: raise ValueError("Critical Error: 'DISCORD_TOKEN' environment variable is missing!")
+    async with bot: await bot.start(token)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Process terminated locally.")
+    try: asyncio.run(main())
+    except KeyboardInterrupt: print("Process terminated locally.")
