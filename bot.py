@@ -6,6 +6,7 @@ import asyncio
 import re
 import sys
 import traceback
+import random
 from drive_utils import GoogleDriveManager
 
 # --- INITS & CORE SETUP ---
@@ -30,6 +31,10 @@ class JukeboxSession:
         self.catalog = []            # Flat chronological array of files fetched from Drive
         self.current_track_id = None # FIXED: Track by unique immutable ID string instead of fragile integer index
         self.manual_skip = False     
+        self.loop_single = False     # Repeat the same song
+        self.loop_all = False        # Repeat the entire folder playlist
+        self.shuffle = False         # Play songs in a random order
+        self.played_shuffle_ids = [] # Shuffled tracks already played in the current cycle
 
     def get_current_track(self):
         # Look up the track object dynamically using the immutable ID
@@ -106,11 +111,46 @@ async def handle_autoplay_next(ctx, error):
         session.manual_skip = False
         return
 
-    # Dynamically find where our current track lives in the catalog *right now*
+    if not session.catalog:
+        return
+
+    # 1. Loop Single Mode: replay the current track
+    if session.loop_single:
+        await start_track_stream(ctx)
+        return
+
+    # Ensure the current track is added to the played list for shuffle
+    if session.current_track_id and session.current_track_id not in session.played_shuffle_ids:
+        session.played_shuffle_ids.append(session.current_track_id)
+
+    # 2. Shuffle Mode
+    if session.shuffle:
+        unplayed = [track for track in session.catalog if track['id'] not in session.played_shuffle_ids]
+        
+        if not unplayed:
+            if session.loop_all:
+                session.played_shuffle_ids = []
+                unplayed = session.catalog
+            else:
+                session.played_shuffle_ids = []
+                await ctx.send("🏁 Shuffled through all tracks in your playlist.")
+                return
+        
+        next_track = random.choice(unplayed)
+        session.current_track_id = next_track['id']
+        session.played_shuffle_ids.append(next_track['id'])
+        await start_track_stream(ctx)
+        return
+
+    # 3. Normal / Sequential Playback Mode
     curr_idx = session.get_current_index()
     if curr_idx != -1 and curr_idx + 1 < len(session.catalog):
         next_track = session.catalog[curr_idx + 1]
-        session.current_track_id = next_track['id'] # Move reference forward safely
+        session.current_track_id = next_track['id']
+        await start_track_stream(ctx)
+    elif session.loop_all:
+        next_track = session.catalog[0]
+        session.current_track_id = next_track['id']
         await start_track_stream(ctx)
     else:
         await ctx.send("🏁 Reached the end of your Google Drive folder playlist loop.")
@@ -233,6 +273,57 @@ async def seek(ctx, seconds: int):
         return await ctx.send("There is no active music stream to manipulate timestamps on.")
     await start_track_stream(ctx, seek_time=seconds)
 
+@bot.command(name="shuffle")
+async def shuffle(ctx):
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
+    session.shuffle = not session.shuffle
+    if session.shuffle:
+        session.played_shuffle_ids = []
+        if session.current_track_id:
+            session.played_shuffle_ids.append(session.current_track_id)
+        await ctx.send("🔀 Shuffle mode **ENABLED**.")
+    else:
+        session.played_shuffle_ids = []
+        await ctx.send("🔀 Shuffle mode **DISABLED**.")
+
+@bot.command(name="loop")
+async def loop_mode(ctx, mode: str = None):
+    if not ctx.guild: return
+    session = get_session(ctx.guild.id)
+    
+    if mode is None:
+        if not session.loop_single and not session.loop_all:
+            session.loop_single = True
+            session.loop_all = False
+            msg = "🔂 Loop Mode: **Single Track** (repeating current track)"
+        elif session.loop_single and not session.loop_all:
+            session.loop_single = False
+            session.loop_all = True
+            msg = "🔁 Loop Mode: **All Tracks** (repeating entire playlist)"
+        else:
+            session.loop_single = False
+            session.loop_all = False
+            msg = "🚫 Loop Mode: **Off** (play sequentially and stop at end)"
+    else:
+        mode = mode.lower().strip()
+        if mode in ("single", "track", "one", "1"):
+            session.loop_single = True
+            session.loop_all = False
+            msg = "🔂 Loop Mode set to: **Single Track**"
+        elif mode in ("all", "playlist", "queue"):
+            session.loop_single = False
+            session.loop_all = True
+            msg = "🔁 Loop Mode set to: **All Tracks**"
+        elif mode in ("off", "none", "disable"):
+            session.loop_single = False
+            session.loop_all = False
+            msg = "🚫 Loop Mode set to: **Off**"
+        else:
+            return await ctx.send("Invalid loop mode! Use `!loop single`, `!loop all`, or `!loop off`.")
+            
+    await ctx.send(msg)
+
 @bot.command(name="help")
 async def help_menu(ctx):
     embed = discord.Embed(
@@ -253,6 +344,11 @@ async def help_menu(ctx):
     embed.add_field(
         name="🎛️ Timeline Modifiers",
         value="`!pause` - Freezes current timeline play state.\n`!resume` - Continues music playback.\n`!seek <seconds>` - Fast-forwards/rewinds directly to a specific timestamp frame coordinate.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔁 Playlist Modifiers",
+        value="`!shuffle` - Toggles play order randomization.\n`!loop [mode]` - Cycles loop state (Off -> Track -> All -> Off) or sets directly (`!loop single` / `!loop all` / `!loop off`).",
         inline=False
     )
     embed.add_field(
